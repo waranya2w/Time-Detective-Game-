@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Time Detective Junior - นักสืบกาลเวลาจูเนียร์</title>
+    
+    <!-- Google Fonts: Mali -->
+    <link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Mali', 'sans-serif'] },
+                    colors: {
+                        navy: '#0f172a',
+                        indigo: '#312e81'
+                    },
+                    animation: {
+                        'shake': 'shake 0.5s infinite',
+                        'pop': 'pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+                        'float': 'float 3s ease-in-out infinite'
+                    },
+                    keyframes: {
+                        shake: {
+                            '0%, 100%': { transform: 'translateX(0)' },
+                            '25%': { transform: 'translateX(-5px)' },
+                            '75%': { transform: 'translateX(5px)' }
+                        },
+                        pop: {
+                            '0%': { transform: 'scale(0.5)', opacity: 0 },
+                            '100%': { transform: 'scale(1)', opacity: 1 }
+                        },
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-10px)' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Custom CSS for 3D Bubble & Glassmorphism -->
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; touch-action: none; }
+        
+        .glass-bubble {
+            background: linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.05) 100%);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 2px solid rgba(255,255,255,0.4);
+            box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.5), 
+                        inset 0 8px 12px 0 rgba(255,255,255,0.6),
+                        inset 0 -4px 10px 0 rgba(0,0,0,0.2);
+            border-radius: 2.5rem;
+        }
+
+        .btn-3d {
+            transition: all 0.15s ease;
+            box-shadow: 0 10px 0px 0 rgba(0,0,0,0.6), 0 20px 25px rgba(0,0,0,0.5);
+            border-radius: 9999px;
+        }
+        
+        .btn-3d:active {
+            transform: translateY(10px);
+            box-shadow: 0 0px 0px 0 rgba(0,0,0,0.6), 0 5px 10px rgba(0,0,0,0.5);
+        }
+
+        /* Mirror video for natural movement */
+        .mirror { transform: scaleX(-1); }
+        
+        /* Hide scrollbar */
+        ::-webkit-scrollbar { display: none; }
+    </style>
+
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- MediaPipe Face Detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // --- Web Audio API Synthesizer ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        const playTone = (freq, type, duration, vol=0.1) => {
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+            osc.stop(audioCtx.currentTime + duration);
+        };
+
+        const soundFX = {
+            click: () => playTone(600, 'sine', 0.1, 0.15),
+            tick: () => playTone(800, 'square', 0.05, 0.05),
+            correct: () => { playTone(523.25, 'sine', 0.1); setTimeout(()=>playTone(659.25, 'sine', 0.3), 100); },
+            wrong: () => playTone(150, 'sawtooth', 0.4),
+            reset: () => { playTone(440, 'sine', 0.1); setTimeout(()=>playTone(880, 'sine', 0.2), 150); },
+            portal: () => {
+                for(let i=0; i<15; i++) setTimeout(() => playTone(200 + i*40, 'sine', 0.1, 0.2), i*40);
+            },
+            endgame: () => {
+                playTone(523.25, 'sine', 0.2);
+                setTimeout(()=>playTone(659.25, 'sine', 0.2), 200);
+                setTimeout(()=>playTone(783.99, 'sine', 0.4), 400);
+            }
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [gameState, setGameState] = useState('HOME'); 
+            const [version, setVersion] = useState(1); 
+            const [showMenu, setShowMenu] = useState(false);
+            const [showRules, setShowRules] = useState(false);
+            const [muted, setMuted] = useState(false);
+            
+            const [phase, setPhase] = useState('IDLE'); 
+            const [timer, setTimer] = useState(10);
+            const [qIndex, setQIndex] = useState(0);
+            const [question, setQuestion] = useState(null);
+            const [camActive, setCamActive] = useState(false);
+            
+            const videoRef = useRef(null);
+            const [faces, setFaces] = useState([]); 
+            const [wrongFaces, setWrongFaces] = useState([]);
+            
+            const homeMusicRef = useRef(new Audio('soundhomepage.wav'));
+            
+            useEffect(() => {
+                homeMusicRef.current.loop = true;
+                homeMusicRef.current.volume = 0.5;
+                if (!muted && gameState === 'HOME') {
+                    homeMusicRef.current.play().catch(e => console.log("รอการคลิกจากผู้ใช้เพื่อเล่นเสียง"));
+                } else {
+                    homeMusicRef.current.pause();
+                }
+            }, [gameState, muted]);
+
+            // --- MediaPipe Face Detection (Native Camera version for Mobile/Safari) ---
+            useEffect(() => {
+                if(!videoRef.current) return;
+                
+                const faceDetection = new FaceDetection({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+                }});
+                
+                faceDetection.setOptions({ model: 'short', minDetectionConfidence: 0.5 });
+                
+                faceDetection.onResults((results) => {
+                    if (results.detections) {
+                        setFaces(results.detections.map(d => d.boundingBox));
+                    } else {
+                        setFaces([]);
+                    }
+                });
+
+                let animationFrameId;
+
+                const startNativeCamera = async () => {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: { 
+                                facingMode: 'user',
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 }
+                            }
+                        });
+                        
+                        if (videoRef.current) {
+                            videoRef.current.srcObject = stream;
+                            videoRef.current.onloadedmetadata = () => {
+                                videoRef.current.play();
+                                setCamActive(true);
+                                
+                                const processFrame = async () => {
+                                    if(videoRef.current && videoRef.current.readyState >= 2) {
+                                        await faceDetection.send({image: videoRef.current});
+                                    }
+                                    animationFrameId = requestAnimationFrame(processFrame);
+                                };
+                                processFrame();
+                            };
+                        }
+                    } catch (err) {
+                        console.error("Camera access error:", err);
+                        alert("ไม่สามารถเข้าถึงกล้องได้ กรุณาอนุญาตการใช้งานกล้องบนเบราว์เซอร์");
+                    }
+                };
+
+                startNativeCamera();
+
+                return () => {
+                    if (animationFrameId) cancelAnimationFrame(animationFrameId);
+                    if (videoRef.current && videoRef.current.srcObject) {
+                        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+                    }
+                };
+            }, []);
+
+            const generateQuestion = (ver) => {
+                let q, ans, wrongAns;
+                if (ver === 1) {
+                    const min = Math.floor(Math.random() * 10) + 1;
+                    q = `${min} นาที`;
+                    ans = min * 60;
+                    wrongAns = ans + (Math.random() > 0.5 ? 60 : -60 > 0 ? -60 : 120);
+                    return { text: q, correctText: `${ans} วินาที`, wrongText: `${wrongAns} วินาที`, isLeftCorrect: Math.random() > 0.5 };
+                } else {
+                    const min = Math.floor(Math.random() * 6) + 1;
+                    const sec = min * 60;
+                    q = `${sec} วินาที`;
+                    ans = min;
+                    wrongAns = ans + (Math.random() > 0.5 ? 1 : -1 > 0 ? -1 : 2);
+                    return { text: q, correctText: `${ans} นาที`, wrongText: `${wrongAns} นาที`, isLeftCorrect: Math.random() > 0.5 };
+                }
+            };
+
+            useEffect(() => {
+                if (gameState !== 'PLAYING') return;
+
+                let interval;
+                if (phase === 'ASKING') {
+                    interval = setInterval(() => {
+                        setTimer(t => {
+                            if (t > 1) { 
+                                if(!muted) soundFX.tick(); 
+                                return t - 1; 
+                            } else {
+                                handleTimeUp();
+                                return 0;
+                            }
+                        });
+                    }, 1000);
+                } else if (phase === 'ANSWERING') {
+                    interval = setTimeout(() => {
+                        if (qIndex >= 9) {
+                            nextQuestion();
+                        } else {
+                            setPhase('RESETTING');
+                            setTimer(5);
+                            setWrongFaces([]); 
+                            if(!muted) soundFX.reset();
+                        }
+                    }, 3000);
+                } else if (phase === 'RESETTING') {
+                    interval = setInterval(() => {
+                        setTimer(t => {
+                            if (t > 1) {
+                                if(!muted) soundFX.tick();
+                                return t - 1;
+                            } else {
+                                nextQuestion();
+                                return 0;
+                            }
+                        });
+                    }, 1000);
+                }
+                return () => { clearInterval(interval); clearTimeout(interval); };
+            }, [phase, gameState, muted, qIndex]);
+
+            const handleTimeUp = () => {
+                setPhase('ANSWERING');
+                
+                let anyoneWrong = false;
+                let anyoneRight = false;
+                const errFaces = [];
+
+                faces.forEach(face => {
+                    const xCenter = face.xCenter;
+                    let currentZone = 'center';
+                    if (xCenter > 0.66) currentZone = 'left';
+                    else if (xCenter < 0.33) currentZone = 'right';
+
+                    const correctZone = question.isLeftCorrect ? 'left' : 'right';
+
+                    if (currentZone === correctZone) {
+                        anyoneRight = true;
+                    } else if (currentZone !== 'center') {
+                        anyoneWrong = true;
+                        errFaces.push(face);
+                    }
+                });
+
+                setWrongFaces(errFaces);
+
+                if (anyoneRight && !anyoneWrong) {
+                    if(!muted) soundFX.correct();
+                } else {
+                    if(!muted) soundFX.wrong(); 
+                }
+            };
+
+            const nextQuestion = () => {
+                if (qIndex >= 9) {
+                    if(!muted) soundFX.endgame();
+                    setGameState('END');
+                } else {
+                    setQIndex(q => q + 1);
+                    setQuestion(generateQuestion(version));
+                    setPhase('ASKING');
+                    setTimer(10);
+                }
+            };
+
+            const startGame = () => {
+                if(!muted) { soundFX.click(); soundFX.portal(); }
+                setShowMenu(false);
+                setShowRules(false);
+                setGameState('TRANSITION');
+            };
+
+            const initGameVariables = () => {
+                setQIndex(0);
+                setQuestion(generateQuestion(version));
+                setPhase('ASKING');
+                setTimer(10);
+                setWrongFaces([]);
+                setGameState('PLAYING');
+            };
+
+            return (
+                <div className="relative w-screen h-screen overflow-hidden bg-navy text-white font-sans select-none flex flex-col items-center justify-center">
+                    
+                    {/* Added webkit-playsinline for iOS Safari support */}
+                    <video 
+                        ref={videoRef} 
+                        className={`absolute inset-0 w-full h-full object-cover mirror transition-opacity duration-1000 ${gameState === 'PLAYING' ? 'opacity-100' : 'opacity-0'}`} 
+                        autoPlay playsInline webkit-playsinline muted
+                    />
+
+                    <button 
+                        onClick={() => { setMuted(!muted); soundFX.click(); }}
+                        className="absolute top-4 right-4 md:top-6 md:right-6 z-50 glass-bubble w-12 h-12 md:w-16 md:h-16 flex items-center justify-center text-xl md:text-3xl btn-3d"
+                    >
+                        {muted ? '🔇' : '🔊'}
+                    </button>
+
+                    {gameState === 'HOME' && (
+                        <div className="absolute inset-0 z-20 flex flex-col items-center justify-end pb-8 md:pb-12">
+                            <video src="homepage.mp4" autoPlay loop playsInline webkit-playsinline muted className="absolute inset-0 w-full h-full object-cover -z-10" />
+                            
+                            <div className="flex gap-4 md:gap-8 items-end animate-float px-4">
+                                <img src="howtoplaybutton.png" alt="How to Play" 
+                                    className="w-[100px] md:w-[200px] cursor-pointer hover:scale-110 active:scale-95 btn-3d rounded-2xl md:rounded-3xl border-2 border-white/20 transition-transform"
+                                    onClick={() => { if(!muted) soundFX.click(); setShowRules(true); setShowMenu(false); }} />
+                                
+                                <img src="startbutton.png" alt="Start Game" 
+                                    className="w-[140px] md:w-[280px] cursor-pointer hover:scale-110 active:scale-95 btn-3d rounded-[1.5rem] md:rounded-[2.5rem] border-4 border-yellow-300/50 transition-transform"
+                                    onClick={startGame} />
+                                
+                                <img src="menubutton.png" alt="Menu" 
+                                    className="w-[100px] md:w-[200px] cursor-pointer hover:scale-110 active:scale-95 btn-3d rounded-2xl md:rounded-3xl border-2 border-white/20 transition-transform"
+                                    onClick={() => { if(!muted) soundFX.click(); setShowMenu(true); setShowRules(false); }} />
+                            </div>
+
+                            <div 
+                                className={`fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-md transition-all duration-300 ease-out p-4 ${
+                                    showMenu ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+                                }`}
+                                onClick={() => setShowMenu(false)}
+                            >
+                                <div 
+                                    className={`glass-bubble p-6 md:p-10 flex flex-col items-center w-[95vw] max-w-[500px] transition-all duration-300 ease-out transform ${
+                                        showMenu ? 'scale-100 translate-y-0 opacity-100' : 'scale-90 translate-y-6 opacity-0'
+                                    }`}
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <h2 className="text-2xl md:text-4xl font-bold mb-6 md:mb-8 text-yellow-300 drop-shadow-md">เลือกภารกิจ</h2>
+                                    
+                                    <button 
+                                        className={`px-4 py-4 md:px-6 md:py-5 mb-4 md:mb-6 text-lg md:text-2xl font-bold rounded-2xl md:rounded-3xl w-full btn-3d border-2 md:border-4 transition-all duration-200 ${
+                                            version === 1 ? 'bg-indigo-600 border-yellow-400 scale-105' : 'bg-navy/80 border-transparent text-gray-300 hover:bg-navy'
+                                        }`}
+                                        onClick={() => { if(!muted) soundFX.click(); setVersion(1); }}
+                                    >
+                                        ⏳ เปลี่ยน นาที ➔ วินาที
+                                    </button>
+                                    
+                                    <button 
+                                        className={`px-4 py-4 md:px-6 md:py-5 text-lg md:text-2xl font-bold rounded-2xl md:rounded-3xl w-full btn-3d border-2 md:border-4 transition-all duration-200 ${
+                                            version === 2 ? 'bg-indigo-600 border-yellow-400 scale-105' : 'bg-navy/80 border-transparent text-gray-300 hover:bg-navy'
+                                        }`}
+                                        onClick={() => { if(!muted) soundFX.click(); setVersion(2); }}
+                                    >
+                                        ⏱️ เปลี่ยน วินาที ➔ นาที
+                                    </button>
+
+                                    <button 
+                                        className="mt-6 md:mt-8 text-red-300 text-base md:text-lg hover:text-red-400 font-bold underline transition-colors"
+                                        onClick={() => { if(!muted) soundFX.click(); setShowMenu(false); }}
+                                    >
+                                       👉เสร็จสิ้น👈
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div 
+                                className={`fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-md transition-all duration-300 ease-out p-4 ${
+                                    showRules ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+                                }`}
+                                onClick={() => setShowRules(false)}
+                            >
+                                <div 
+                                    className={`glass-bubble p-6 md:p-10 flex flex-col items-center w-[95vw] max-w-[700px] text-center transition-all duration-300 ease-out transform ${
+                                        showRules ? 'scale-100 translate-y-0 opacity-100' : 'scale-90 translate-y-6 opacity-0'
+                                    }`}
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <h2 className="text-2xl md:text-4xl font-bold mb-4 md:mb-6 text-yellow-300 drop-shadow-md">👉กติกาการเล่น👈</h2>
+                                    <div className="bg-black/30 rounded-2xl p-4 md:p-6 text-left w-full mb-6 md:mb-8 border border-white/20 shadow-inner">
+                                        <p className="text-lg md:text-2xl mb-2 md:mb-4 leading-relaxed">🧍 <span className="font-bold text-cyan-300">1.</span> เริ่มต้นให้ผู้เล่นยืนตรงกลางเพื่อรอคำถาม</p>
+                                        <p className="text-lg md:text-2xl mb-2 md:mb-4 leading-relaxed">🏃 <span className="font-bold text-cyan-300">2.</span> หาคำตอบที่ถูกต้อง แล้วเลือกวิ่งไป <span className="text-yellow-300">"โซนซ้าย"</span> หรือ <span className="text-yellow-300">"โซนขวา"</span></p>
+                                        <p className="text-lg md:text-2xl mb-2 md:mb-4 leading-relaxed">⏱️ <span className="font-bold text-cyan-300">3.</span> มีเวลาในการตอบ <span className="text-red-400 font-bold">10 วินาที!</span> </p>
+                                        <p className="text-lg md:text-2xl leading-relaxed">🔄 <span className="font-bold text-cyan-300">4.</span> รีบกลับมา "โซนตรงกลาง" ก่อนเริ่มข้อต่อไป</p>
+                                    </div>
+                                    <button 
+                                        className="px-6 py-3 md:px-10 md:py-4 bg-gradient-to-b from-red-400 to-red-600 rounded-full font-bold btn-3d text-lg md:text-2xl hover:scale-105 active:scale-95 transition-transform" 
+                                        onClick={() => { if(!muted) soundFX.click(); setShowRules(false); }}
+                                    >
+                                        เข้าใจแล้ว ลุยเลย! 🚀
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {gameState === 'TRANSITION' && (
+                        <video 
+                            src="gotoplay.mp4" 
+                            autoPlay playsInline webkit-playsinline
+                            className="absolute inset-0 w-full h-full object-cover z-30" 
+                            onEnded={initGameVariables} 
+                        />
+                    )}
+
+                    {gameState === 'PLAYING' && question && (
+                        <div className="absolute inset-0 z-10 w-full h-full">
+                            
+                            <div className="absolute left-[33.33%] top-0 bottom-0 border-r-[3px] md:border-r-[6px] border-dashed border-white/30 shadow-[0_0_15px_rgba(255,255,255,0.4)] z-0"></div>
+                            <div className="absolute right-[33.33%] top-0 bottom-0 border-l-[3px] md:border-l-[6px] border-dashed border-white/30 shadow-[0_0_15px_rgba(255,255,255,0.4)] z-0"></div>
+
+                            {!camActive && (
+                                <div className="absolute top-4 right-16 md:right-28 glass-bubble px-3 py-1 md:px-4 md:py-2 text-sm md:text-base text-yellow-300 font-bold animate-pulse">
+                                    กำลังเปิดกล้อง...
+                                </div>
+                            )}
+                            {camActive && faces.length > 0 && (
+                                <div className="absolute top-4 left-4 md:top-6 md:left-6 glass-bubble px-3 py-2 md:px-6 md:py-3 text-sm md:text-xl font-bold text-green-300 flex items-center gap-2">
+                                    <span className="relative flex h-3 w-3 md:h-4 md:w-4">
+                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                      <span className="relative inline-flex rounded-full h-3 w-3 md:h-4 md:w-4 bg-green-500"></span>
+                                    </span>
+                                    <span className="hidden sm:inline">ตรวจพบนักสืบ:</span> {faces.length} คน
+                                </div>
+                            )}
+
+                            <div className="absolute top-16 right-4 md:top-6 md:right-[120px] glass-bubble px-4 py-2 md:px-8 md:py-3 text-lg md:text-3xl font-bold text-yellow-300 shadow-[0_0_15px_rgba(253,224,71,0.3)]">
+                                ภารกิจที่ {qIndex + 1}/10
+                            </div>
+
+                            <div className="w-full h-full flex">
+                                
+                                <div className="w-1/3 h-full flex items-center justify-center p-2 md:p-8 relative">
+                                    <div className={`glass-bubble w-full h-[180px] sm:h-[250px] md:h-[350px] flex flex-col items-center justify-center transition-all duration-700 ease-in-out
+                                        ${phase === 'ANSWERING' ? 
+                                            (question.isLeftCorrect ? 'bg-green-500/80 border-green-300 scale-105 shadow-[0_0_30px_rgba(74,222,128,0.6)]' : 'bg-red-500/50 border-red-400 opacity-50') 
+                                            : 'hover:scale-105 bg-indigo-900/40'}`}>
+                                        
+                                        <h2 className="text-xl sm:text-3xl md:text-6xl font-bold drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] text-white text-center px-1 md:px-4 leading-tight">
+                                            {question.isLeftCorrect ? question.correctText : question.wrongText}
+                                        </h2>
+                                        
+                                        {phase === 'ANSWERING' && question.isLeftCorrect && (
+                                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-[60px] md:text-[150px] animate-pop drop-shadow-2xl">
+                                                ✅
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="w-1/3 h-full flex flex-col items-center justify-start pt-6 md:pt-12 px-2 md:px-6">
+                                    
+                                    <div className={`glass-bubble w-full py-4 md:py-8 text-center shadow-2xl z-20 transition-all duration-500 ${phase === 'RESETTING' ? 'bg-yellow-500/70 border-yellow-300' : 'bg-indigo-800/70'}`}>
+                                        {phase === 'RESETTING' ? (
+                                            <div className="animate-pop">
+                                                <h1 className="text-2xl md:text-6xl font-bold text-yellow-100 drop-shadow-md mb-1 md:mb-2 tracking-wider">RESET</h1>
+                                                <p className="text-sm md:text-3xl text-white">วิ่งกลับมาตรงกลางด่วน!</p>
+                                            </div>
+                                        ) : (
+                                            <div className="animate-pop">
+                                                <p className="text-sm md:text-2xl text-cyan-200 mb-1 md:mb-2 font-semibold">เปลี่ยนหน่วยเวลา</p>
+                                                <h1 className="text-2xl sm:text-4xl md:text-7xl font-bold text-white drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)]">
+                                                    {question.text}
+                                                </h1>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="flex-grow flex items-center justify-center relative">
+                                        <div className={`glass-bubble rounded-full w-[100px] h-[100px] md:w-[220px] md:h-[220px] flex items-center justify-center border-4 md:border-8 transition-colors duration-300
+                                            ${timer <= 3 && phase === 'ASKING' ? 'border-red-500 text-red-100 bg-red-900/80 animate-shake shadow-[0_0_40px_rgba(239,68,68,0.8)]' 
+                                            : phase === 'RESETTING' ? 'border-yellow-400 text-yellow-300 bg-yellow-900/50'
+                                            : 'border-cyan-400 text-cyan-100 bg-cyan-900/50 shadow-[0_0_30px_rgba(34,211,238,0.5)]'}`}>
+                                            
+                                            <span className="text-[40px] md:text-[100px] font-bold drop-shadow-lg">{timer}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="w-1/3 h-full flex items-center justify-center p-2 md:p-8 relative">
+                                    <div className={`glass-bubble w-full h-[180px] sm:h-[250px] md:h-[350px] flex flex-col items-center justify-center transition-all duration-700 ease-in-out
+                                        ${phase === 'ANSWERING' ? 
+                                            (!question.isLeftCorrect ? 'bg-green-500/80 border-green-300 scale-105 shadow-[0_0_30px_rgba(74,222,128,0.6)]' : 'bg-red-500/50 border-red-400 opacity-50') 
+                                            : 'hover:scale-105 bg-indigo-900/40'}`}>
+                                        
+                                        <h2 className="text-xl sm:text-3xl md:text-6xl font-bold drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] text-white text-center px-1 md:px-4 leading-tight">
+                                            {!question.isLeftCorrect ? question.correctText : question.wrongText}
+                                        </h2>
+                                        
+                                        {phase === 'ANSWERING' && !question.isLeftCorrect && (
+                                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-[60px] md:text-[150px] animate-pop drop-shadow-2xl">
+                                                ✅
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {faces.map((face, i) => {
+                                const xPos = (1 - face.xCenter) * 100;
+                                const yPos = face.yCenter * 100;
+                                
+                                let isFaceInWrongZone = false;
+                                if (phase === 'ANSWERING') {
+                                    let currentZone = 'center';
+                                    if (face.xCenter > 0.66) currentZone = 'left';
+                                    else if (face.xCenter < 0.33) currentZone = 'right';
+                                    
+                                    const correctZone = question.isLeftCorrect ? 'left' : 'right';
+                                    if (currentZone !== 'center' && currentZone !== correctZone) {
+                                        isFaceInWrongZone = true;
+                                    }
+                                }
+                                
+                                return (
+                                    <div key={i} className="absolute pointer-events-none transform -translate-x-1/2 -translate-y-1/2 z-50 transition-all duration-75" style={{ left: `${xPos}%`, top: `${yPos}%` }}>
+                                        <div className="w-16 h-16 md:w-24 md:h-24 border-[3px] md:border-4 border-cyan-400 rounded-[1rem] md:rounded-3xl opacity-50 shadow-[0_0_15px_rgba(34,211,238,0.8)]"></div>
+                                        
+                                        {isFaceInWrongZone && (
+                                            <div className="absolute -top-16 md:-top-28 left-1/2 transform -translate-x-1/2 text-[50px] md:text-[90px] animate-pop drop-shadow-2xl">
+                                                😭
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {gameState === 'END' && (
+                        <div className="absolute inset-0 z-20 flex flex-col items-center justify-end pb-[8vh] md:pb-[10vh]">
+                            <video src="endpage.mp4" autoPlay loop playsInline webkit-playsinline muted={muted} className="absolute inset-0 w-full h-full object-cover -z-10" />
+                            
+                            <div className="flex gap-6 md:gap-16 items-end animate-float px-4">
+                                <img src="homebutton.png" alt="Home" 
+                                    className="w-[140px] md:w-[280px] cursor-pointer hover:scale-110 btn-3d rounded-full border-2 md:border-4 border-white/20"
+                                    onClick={() => { if(!muted) soundFX.click(); setGameState('HOME'); }} />
+                                
+                                <img src="playagainbutton.png" alt="Play Again" 
+                                    className="w-[140px] md:w-[280px] cursor-pointer hover:scale-110 btn-3d rounded-full border-2 md:border-4 border-white/20"
+                                    onClick={() => { if(!muted) soundFX.click(); initGameVariables(); }} />
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
